@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+
+	"github.com/xaxaxa/tcptun"
 	"github.com/xaxaxa/tcptun/original_dst"
 )
 
@@ -57,37 +59,5 @@ func handleClient(sock *net.TCPConn) {
 	outgoingSock, _ := outgoingSock1.(*net.TCPConn)
 
 	// splice the two sockets
-	spliceSockets(sock, outgoingSock)
-}
-
-// spliceSockets reads data from a and writes to b, and vice versa
-func spliceSockets(a, b *net.TCPConn) {
-	var ch chan error
-	go func() { ch <- spliceSocket(a, b) }()
-	go func() { ch <- spliceSocket(b, a) }()
-
-	// if any of the two splices return an error, close both sockets right away;
-	// if any of the two splices finishes, wait for the other splice to finish too
-	err := <-ch
-	if err == nil {
-		err = <-ch
-	}
-	close(ch)
-	a.Close()
-	b.Close()
-}
-
-// spliceSocket reads data from src and writes it to dst
-func spliceSocket(src, dst *net.TCPConn) error {
-	buf := make([]byte, *bufSize)
-	for {
-		br, err := src.Read(buf)
-		if err != nil {
-			return nil
-		}
-		if br <= 0 {
-			return dst.CloseWrite()
-		}
-		dst.Write(buf[:br])
-	}
+	tcptun.SpliceSockets(sock, outgoingSock)
 }
