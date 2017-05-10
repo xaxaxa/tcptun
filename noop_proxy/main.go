@@ -20,6 +20,7 @@ var bufSize = flag.Int("bufsize", 8192, "size of userspace buffer when reading/w
 
 func main() {
 	flag.Parse()
+	tcptun.BufSize = *bufSize
 
 	// create listening socket
 	serverSock, err := net.Listen("tcp", *listenAddress)
