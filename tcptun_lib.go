@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-var BufSize int = 8192
+var BufSize int = 1024*16
 
 // ReadWrite2Closer is the same as ReadWriteCloser, but with separate
 // CloseRead() and CloseWrite() functions
@@ -19,7 +19,7 @@ type ReadWrite2Closer interface {
 
 // TransportClient represent the client side of a transport; a transport
 // is any mechanism that allows bi-directional multi-stream communication
-// to a server.
+// to a server, for example (multiple) tcp connections or an SCTP connection.
 type TransportClient interface {
 	// Connect returns a new data stream to the server
 	Connect() (ReadWrite2Closer, error)
@@ -36,6 +36,27 @@ type Servlet interface {
 	HandleConnection(ReadWrite2Closer) error
 }
 
+type MultiplexerClient interface {
+	// pre-mux side
+	HandleConnection(addr string, stream ReadWrite2Closer) error
+	// post-mux side
+	SetTransport(TransportClient)
+	Begin() error
+}
+
+type MultiplexerServer interface {
+	// pre-demux side
+	Servlet
+	// post-demux side
+	SetGateway(Gateway)
+}
+
+// Gateway represents a gateway to the outside world; it is used on
+// the server side of a tunnel to connect to final destinations.
+type Gateway interface {
+	Dial(addr string) (ReadWrite2Closer, error)
+}
+
 type SimpleServlet struct {
 }
 
@@ -47,7 +68,7 @@ func (this *SimpleServlet) HandleConnection(stream ReadWrite2Closer) error {
 		return err
 	}
 	addrLen := int(buf[0])
-	for br < (addrLen+1) {
+	for br < (addrLen + 1) {
 		tmp, err := stream.Read(buf[br:])
 		if tmp <= 0 || err != nil {
 			stream.Close()
@@ -64,6 +85,21 @@ func (this *SimpleServlet) HandleConnection(stream ReadWrite2Closer) error {
 	WriteAll(dstSock.(*net.TCPConn), buf[addrLen+1:br])
 	SpliceSockets(stream, dstSock.(*net.TCPConn))
 	return nil
+}
+
+type NoopGateway struct {
+	network string
+}
+
+func NewNoopGateway(network string) *NoopGateway {
+	return &NoopGateway{network}
+}
+func (this *NoopGateway) Dial(addr string) (ReadWrite2Closer, error) {
+	tmp, err := net.Dial(this.network, addr)
+	if err != nil {
+		return nil, err
+	}
+	return tmp.(ReadWrite2Closer), nil
 }
 
 // SpliceSockets reads data from a and writes to b, and vice versa
@@ -121,7 +157,20 @@ func WriteAll(w io.Writer, buf []byte) error {
 	return nil
 }
 
-// CombinedPipe combines a read pipe and a write pipe into a ReadWrite2Closer
+func ReadAll(r io.Reader, buf []byte) error {
+	br := 0
+	for br < len(buf) {
+		tmp, err := r.Read(buf[br:])
+		if tmp <= 0 || err != nil {
+			return err
+		}
+		br += tmp
+	}
+	return nil
+}
+
+// CombinedPipe combines a read pipe and a write pipe into a ReadWrite2Closer;
+// it normally represents one "side" of a bidirectional pipe
 type CombinedPipe struct {
 	ReadPipe  io.ReadCloser
 	WritePipe io.WriteCloser
@@ -129,6 +178,13 @@ type CombinedPipe struct {
 
 func CombinePipe(reader io.ReadCloser, writer io.WriteCloser) CombinedPipe {
 	return CombinedPipe{reader, writer}
+}
+func BidirPipe() (side1 CombinedPipe, side2 CombinedPipe) {
+	pipe1r, pipe1w := io.Pipe()
+	pipe2r, pipe2w := io.Pipe()
+	side1 = CombinePipe(pipe1r, pipe2w)
+	side2 = CombinePipe(pipe2r, pipe1w)
+	return side1, side2
 }
 func (this CombinedPipe) Read(p []byte) (n int, err error) {
 	return this.ReadPipe.Read(p)
